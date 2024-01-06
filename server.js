@@ -1,5 +1,7 @@
-import express from 'express';
-import Database from 'better-sqlite3';
+// import express from 'express';
+// import Database from 'better-sqlite3';
+const express = require('express');
+const Database = require('better-sqlite3');
 
 const app = express();
 
@@ -126,7 +128,78 @@ app.put('/api/v1/clients/:id', (req, res) => {
   const client = clients.find(client => client.id === id);
 
   /* ---------- Update code below ----------*/
+  if (!client) {
+    return res.status(404).send({
+      'message': 'Client not found.',
+      'long_message': 'Cannot find client with that id.',
+    });
+  }
 
+  // Store the current position and status of the client
+  const currentPosition = client.position;
+  const currentStatus = client.status;
+
+  // Update the client's status if provided
+  if (status && status !== currentStatus) {
+    // Validate the new status
+    if (status !== 'backlog' && status !== 'in-progress' && status !== 'complete') {
+      return res.status(400).send({
+        'message': 'Invalid status provided.',
+        'long_message': 'Status can only be one of the following: [backlog | in-progress | complete].',
+      });
+    }
+
+    // Update the client's status and reset the priority if the status changes
+    db.prepare('update clients set status = ?, priority = null where id = ?').run(status, id);
+  }
+
+  // Update the client's priority if provided
+  if (priority !== undefined) {
+    const validatedPriority = validatePriority(priority);
+
+    if (!validatedPriority.valid) {
+      return res.status(400).send(validatedPriority.messageObj);
+    }
+
+    // Update the priority only if it's a valid positive integer
+    db.prepare('update clients set priority = ? where id = ?').run(priority, id);
+  }
+
+  // Fetch the updated clients after the changes
+  clients = db.prepare('select * from clients').all();
+
+  // Update the positions if the status or priority has changed
+  if (status && status !== currentStatus) {
+    clients = clients.map((c) => {
+      if (c.status === currentStatus && c.position > currentPosition) {
+        // Move down the clients in the same swimlane after the moved card
+        c.position -= 1;
+      }
+      if (c.status === status && c.position >= currentPosition) {
+        // Move up the clients in the same swimlane after the moved card
+        c.position += 1;
+      }
+      return c;
+    });
+  } else if (priority !== undefined && priority !== client.priority) {
+    // Update the positions if the priority has changed in the same swimlane
+    clients = clients.map((c) => {
+      if (c.status === currentStatus && c.position > currentPosition && c.priority >= priority) {
+        // Move down the clients in the same swimlane with equal or higher priority
+        c.position += 1;
+      }
+      if (c.status === currentStatus && c.position > currentPosition && c.priority < priority) {
+        // Move up the clients in the same swimlane with lower priority
+        c.position -= 1;
+      }
+      return c;
+    });
+  }
+
+  // Update the positions in the database
+  clients.forEach((c) => {
+    db.prepare('update clients set position = ? where id = ?').run(c.position, c.id);
+  });
 
 
   return res.status(200).send(clients);
